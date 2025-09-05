@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "SetDnToNull": {
+      "commandName": "Project",
+      "remoteDebugEnabled": false
+    }
+  }
+}
