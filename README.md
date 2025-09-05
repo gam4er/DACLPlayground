@@ -245,23 +245,12 @@ Export relies on **LdapConnection** with **PageResultRequestControl** and **Secu
 
 ---
 
-### Примечания к проектному коду
-
-* **Экспорт** реализован в `ForestExport.cs` (параллельная обработка, атомарная запись).&#x20;
-* **Разбор SDDL и генерация отчётов** — `ParseSDDL.cs` (фильтры по DN, CSV-output, HTML на Spectre).&#x20;
-* **Загрузка/стриминг JSON** — `ParseJsonWithSDDLs.cs` (Record/RecordStreamLoader, обработка пустых/не-array JSON, кэш прав/атрибутов, CLI).&#x20;
-* **Расшифровка прав** — `Rights.cs`.&#x20;
-* **Well-known SIDs** — `SddlSidStrings.cs`.&#x20;
-* **Поиск Extended Rights и Schema Attributes** — `AllLookup.cs` + `FillDomainData`.&#x20;
-
-Если захочешь, добавлю раздел «Threat model / detection mapping» (MITRE, сценарии злоупотребления широкими правами) и JSON-схему в `docs/`.
-
-[1]: https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-definition-language?utm_source=chatgpt.com "Security Descriptor Definition Language - Win32 apps"
-[2]: https://devblogs.microsoft.com/oldnewthing/20220510-00/?p=106640&utm_source=chatgpt.com "A brief summary of the various versions of the Security ..."
-[3]: https://spectreconsole.net/cli/commands?utm_source=chatgpt.com "Creating Commands"
-[4]: https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ldap/paging-search-results?utm_source=chatgpt.com "Paging Search Results | Microsoft Learn"
-[5]: https://spectreconsole.net/api/spectre.console.cli/commandsettings/5ddb132e?utm_source=chatgpt.com "Spectre.Console - Validate()"
-[6]: https://learn.microsoft.com/en-us/dotnet/api/system.directoryservices.protocols.ldapconnection?view=net-9.0-pp&utm_source=chatgpt.com "LdapConnection Class (System.DirectoryServices.Protocols)"
-[7]: https://learn.microsoft.com/en-us/dotnet/api/system.directoryservices.protocols.securitydescriptorflagcontrol?view=netframework-4.8.1&utm_source=chatgpt.com "SecurityDescriptorFlagControl Class (System.DirectoryServices ..."
-[8]: https://learn.microsoft.com/en-us/dotnet/api/system.directoryservices.activedirectory.domain.getalltrustrelationships?view=windowsdesktop-9.0&utm_source=chatgpt.com "Domain.GetAllTrustRelationships Method"
-[9]: https://techcommunity.microsoft.com/blog/askds/the-security-descriptor-definition-language-of-love-part-1/395202?utm_source=chatgpt.com "The Security Descriptor Definition Language of Love (Part 1)"
+[1]: https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-definition-language "Security Descriptor Definition Language - Win32 apps"
+[2]: https://devblogs.microsoft.com/oldnewthing/20220510-00/?p=106640 "A brief summary of the various versions of the Security ..."
+[3]: https://spectreconsole.net/cli/commands "Creating Commands"
+[4]: https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ldap/paging-search-results "Paging Search Results | Microsoft Learn"
+[5]: https://spectreconsole.net/api/spectre.console.cli/commandsettings/5ddb132e "Spectre.Console - Validate()"
+[6]: https://learn.microsoft.com/en-us/dotnet/api/system.directoryservices.protocols.ldapconnection?view=net-9.0-pp "LdapConnection Class (System.DirectoryServices.Protocols)"
+[7]: https://learn.microsoft.com/en-us/dotnet/api/system.directoryservices.protocols.securitydescriptorflagcontrol?view=netframework-4.8.1 "SecurityDescriptorFlagControl Class (System.DirectoryServices ..."
+[8]: https://learn.microsoft.com/en-us/dotnet/api/system.directoryservices.activedirectory.domain.getalltrustrelationships?view=windowsdesktop-9.0 "Domain.GetAllTrustRelationships Method"
+[9]: https://techcommunity.microsoft.com/blog/askds/the-security-descriptor-definition-language-of-love-part-1/395202 "The Security Descriptor Definition Language of Love (Part 1)"
