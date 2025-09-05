@@ -372,7 +372,7 @@ namespace ParseJsonWithSDDLs
 
 
                 File.WriteAllText("Interesting.htm", AnsiConsole.ExportHtml(), Encoding.UTF8);
-                AnsiConsole.Clear();
+                //AnsiConsole.Clear();
                 return 0;
             }
         }
