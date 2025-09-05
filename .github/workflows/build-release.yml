@@ -1,0 +1,102 @@
+name: build-and-release
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # нужно для создания релиза и загрузки ассетов
+
+jobs:
+  build:
+    runs-on: windows-2022  # Visual Studio/MSBuild предустановлены
+    env:
+      CONFIGURATION: Release
+      # ПОДСТАВЬ путь к своему .sln (или оставь автопоиск)
+      SOLUTION: DACLPlayground.sln
+      # Папка, где после сборки лежат выходные файлы (*.exe, *.pdb, *.xml и пр.)
+      BUILD_DIR: DACLPlayground\ParseJsonWithSDDLs\bin\Release
+      DIST_DIR: dist
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+        with:
+          nuget-api-key: ${{ secrets.NUGET_API_KEY || '' }}
+          nuget-version: latest
+      # Документация: экшен ставит nuget.exe в PATH. :contentReference[oaicite:1]{index=1}
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+      # Экшен добавляет MSBuild в PATH на windows runners. :contentReference[oaicite:2]{index=2}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nuget/packages
+            ~\AppData\Local\NuGet\Cache
+            packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.sln', '**/*.csproj', '**/packages.config') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Detect solution if not set
+        id: autodetect
+        shell: pwsh
+        run: |
+          if (-not (Test-Path $env:SOLUTION)) {
+            $sln = (Get-ChildItem -Recurse -Filter *.sln | Select-Object -First 1).FullName
+            if (-not $sln) { throw "Solution (.sln) not found" }
+            echo "SOLUTION=$sln" >> $env:GITHUB_ENV
+          }
+
+      - name: NuGet restore
+        shell: pwsh
+        run: |
+          nuget restore "$env:SOLUTION"
+        # Для .NET Framework целесообразно использовать nuget restore перед MSBuild.
+
+      - name: Build (MSBuild)
+        shell: pwsh
+        run: |
+          msbuild "$env:SOLUTION" /p:Configuration=$env:CONFIGURATION /m
+
+      - name: Prepare dist
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:DIST_DIR" | Out-Null
+          if (-not (Test-Path "$env:BUILD_DIR")) {
+            throw "Build output not found: $env:BUILD_DIR"
+          }
+          $zipName = "ParseJsonWithSDDLs_${{ github.ref_name }}.zip"
+          $zipPath = Join-Path "$env:DIST_DIR" $zipName
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          # Архивируем все файлы из bin\Release (Costura сгенерировал exe + .pdb + .xml и т.д.)
+          Compress-Archive -Path "$env:BUILD_DIR\*" -DestinationPath $zipPath -Force
+          Write-Host "ZIP: $zipPath"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ParseJsonWithSDDLs-${{ github.ref_name }}
+          path: dist/*.zip
+          retention-days: 14
+      # Официальная дока по артефактам (v4). :contentReference[oaicite:3]{index=3}
+
+      - name: Create GitHub Release (on tag only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Экшен для релизов и загрузки ассетов — рекомендуемый паттерн "on tag". :contentReference[oaicite:4]{index=4}
