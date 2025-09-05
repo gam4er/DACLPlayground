@@ -7,42 +7,51 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.DirectoryServices;
+using System.DirectoryServices.ActiveDirectory;
+using System.DirectoryServices.Protocols;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Web.Script.Serialization;
 
 
 namespace ParseJsonWithSDDLs
 {
-
     sealed class AppSettings : CommandSettings
     {
-        [Description("Папка с входными *.json файлами (экспорт объектов AD).")]
+        [Description("Папка с входными *.json файлами (экспорт объектов AD). Если не указана — экспорт будет сгенерирован автоматически.")]
         [CommandOption("-i|--input <FOLDER>")]
         public string InputFolder { get; set; }
 
-        [Description("Файл с исключениями DN (по подстроке, одна строка = одно правило).")]
+        [Description("Файл с исключениями DN (подстроки, по одной в строке).")]
         [CommandOption("-e|--exclude-file <PATH>")]
         public string ExcludeFile { get; set; }
 
-        [Description("Генерировать CSV-вывод (флаг). По умолчанию выключено.")]
+        [Description("Генерировать CSV-вывод.")]
         [CommandOption("--csv")]
         public bool Csv { get; set; }
 
-        [Description("Обновить/пересоздать кэш прав и GUID (флаг).")]
+        [Description("Обновить/пересоздать кэш прав и GUID.")]
         [CommandOption("-u|--update-cache")]
         public bool UpdateCache { get; set; }
 
+        [Description("Папка для автогенерации экспортов, если --input не указан. По умолчанию: ./exports")]
+        [CommandOption("--export-output <FOLDER>")]
+        public string ExportOutput { get; set; } = "exports";
+
+        [Description("Перезаписывать уже существующие JSON при автогенерации.")]
+        [CommandOption("--export-overwrite")]
+        public bool ExportOverwrite { get; set; }
+
         public override ValidationResult Validate()
         {
-            if (string.IsNullOrWhiteSpace(InputFolder))
-                return ValidationResult.Error("Input folder is required. Use -i|--input <FOLDER>.");
-
-            if (!Directory.Exists(InputFolder))
+            if (!string.IsNullOrEmpty(InputFolder) && !Directory.Exists(InputFolder))
                 return ValidationResult.Error($"Input folder not found: {InputFolder}");
 
             if (!string.IsNullOrEmpty(ExcludeFile) && !File.Exists(ExcludeFile))
                 return ValidationResult.Error($"Exclude file not found: {ExcludeFile}");
 
+            // Экспортная папка создастся позже при необходимости
             return ValidationResult.Success();
         }
     }
@@ -112,7 +121,7 @@ namespace ParseJsonWithSDDLs
 
         public static Dictionary<string, SchemaAttribute> attrs = new Dictionary<string, SchemaAttribute>();
         
-        public static string reportPath = "report.csv";
+        public static string reportPath = "Interesting.csv";
 
         public static bool GenerateCsv = false;
         public static HashSet<string> Exclusions = new(StringComparer.OrdinalIgnoreCase);
@@ -169,14 +178,30 @@ namespace ParseJsonWithSDDLs
 
             if (updateCache || !haveCache)
             {
-                // Пересобираем и сохраняем — ваша существующая логика внутри FillDomainData
-                FillDomainData(server);
+                try
+                {
+                    FillDomainData(server); // как и прежде: по итогу она пишет оба json
+                }
+                catch (COMException cex) when ((uint)cex.ErrorCode == 0x8007203A)
+                {
+                    // сервер недоступен — используем имеющийся кэш, либо пропускаем
+                    if (haveCache)
+                    {
+                        LoadDomainCacheFromFiles(server);
+                        AnsiConsole.MarkupLine($"[yellow]Use cached rights/attrs for unreachable DC[/]: {Markup.Escape(server)}");
+                    }
+                    else
+                    {
+                        AnsiConsole.MarkupLine($"[yellow]No rights/attrs for unreachable DC[/]: {Markup.Escape(server)}");
+                        rights.Clear(); attrs.Clear();
+                    }
+                    return;
+                }
             }
             else
             {
-                // Быстро поднимаем из кэша
                 LoadDomainCacheFromFiles(server);
-                AnsiConsole.Write($"Loaded cached rights/attrs for {server}: {rights.Count}/{attrs.Count}.");
+                Console.WriteLine($"Loaded cached rights/attrs for {server}: {rights.Count}/{attrs.Count}.");
             }
         }
 
@@ -277,63 +302,82 @@ namespace ParseJsonWithSDDLs
         {
             public override int Execute(CommandContext context, AppSettings settings)
             {
-                // Настраиваем флаги
                 ParseJsonWithSDDLs.GenerateCsv = settings.Csv;
                 LoadExclusions(settings.ExcludeFile);
 
-                // Если CSV выключен, гарантируем, что файл отчёта не будет создаваться/дозаписываться
+                string inputFolder = settings.InputFolder;
+
+                // ❶ Если --input НЕ указан → автогенерация экспортов
+                if (string.IsNullOrWhiteSpace(inputFolder))
+                {
+                    inputFolder = settings.ExportOutput;
+                    AnsiConsole.MarkupLine($"[yellow]--input не задан.[/] Автогенерация экспортов в: [bold]{Markup.Escape(inputFolder)}[/]");
+                    ForestExport.ExportAll(inputFolder, settings.ExportOverwrite);
+                }
+
+                // ❷ CSV-шапка при необходимости
                 if (ParseJsonWithSDDLs.GenerateCsv && !File.Exists(ParseJsonWithSDDLs.reportPath))
                 {
                     File.WriteAllText(ParseJsonWithSDDLs.reportPath,
-                        "DistinguishedName,Identity,AccessControlType,ActiveDirectoryRight,ObjectType\n");
+                        "DistinguishedName,Identity,AccessControlType,ActiveDirectoryRight,ObjectType\n", Encoding.UTF8);
                 }
 
-                AnsiConsole.Record(); // будем экспортировать HTML-лог. См. API ExportHtml. :contentReference[oaicite:5]{index=5}
+                AnsiConsole.Record();
 
-                // Перебираем входные JSON-файлы
-                foreach (var filePath in Directory.EnumerateFiles(settings.InputFolder, "*.json", SearchOption.TopDirectoryOnly))
+                // ❸ Права/атрибуты: используем/пересобираем кэш на каждый server.json
+                foreach (var filePath in Directory.EnumerateFiles(inputFolder, "*.json", System.IO.SearchOption.TopDirectoryOnly))
                 {
+                    // быстрый фильтр пустышек
+                    var fi = new FileInfo(filePath);
+                    if (fi.Length < 3) // "[]" — 2 байта, плюс возможен CR/LF
+                    {
+                        AnsiConsole.MarkupLine($"[yellow]Skip empty file[/]: {Markup.Escape(filePath)}");
+                        continue;
+                    }
+
+                    // дополнительно: элементарная валидация, что это JSON-массив
+                    using (var fs = File.OpenRead(filePath))
+                    using (var sr = new StreamReader(fs, Encoding.UTF8, true, 4096, leaveOpen: false))
+                    {
+                        int first = sr.Peek();
+                        if (first != '[') // наш экспортер пишет массив
+                        {
+                            AnsiConsole.MarkupLine($"[yellow]Skip non-array JSON[/]: {Markup.Escape(filePath)}");
+                            continue;
+                        }
+                    }
+
                     string server = Path.GetFileNameWithoutExtension(filePath);
 
-                    // Кэш прав/атрибутов: либо используем, либо пересобираем
-                    EnsureDomainData(server, settings.UpdateCache);
+                    // если домен недоступен сейчас — FillDomainData может упасть → обернём и пропустим
+                    try
+                    {
+                        EnsureDomainData(server, settings.UpdateCache);
+                    }
+                    catch (COMException cex) when ((uint)cex.ErrorCode == 0x8007203A)
+                    {
+                        AnsiConsole.MarkupLine($"[yellow]Skip rights/attrs for unreachable DC[/]: {Markup.Escape(server)}");
+                        continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        AnsiConsole.MarkupLine($"[yellow]Skip rights/attrs for {Markup.Escape(server)}[/]: {Markup.Escape(ex.Message)}");
+                        continue;
+                    }
 
-                    // Потоковый разбор входного файла
+                    // стримим записи
                     foreach (var rec in RecordStreamLoader.Stream(filePath))
                         ParseSDDL.CheckSDDL(rec.Sddl, rec.DistinguishedName);
                 }
 
-                // HTML-отчёт Spectre (то, что печатали в консоль)
-                File.WriteAllText("Interesting.htm", AnsiConsole.ExportHtml());
 
+                File.WriteAllText("Interesting.htm", AnsiConsole.ExportHtml(), Encoding.UTF8);
                 AnsiConsole.Clear();
                 return 0;
             }
         }
 
 
-        /*
-        static void Main(string [] args)
-        {   
-            // Если файла нет — создаём с заголовком
-            if (!File.Exists(reportPath))
-                File.WriteAllText(reportPath, "DistinguishedName,Identity,AccessControlType,ActiveDirectoryRight,ObjectType\n");
-            
-            AnsiConsole.Record();
-
-            foreach (var filePath in Directory.EnumerateFiles("d:\\Documents\\GitHub\\NullOrEmptyDACL\\Framework\\bin\\Debug\\", "*.json", SearchOption.TopDirectoryOnly))
-            {                
-                string server = Path.GetFileName(filePath).Replace(".json", "");
-                
-                FillDomainData(server);
-                foreach (var rec in RecordStreamLoader.Stream(filePath))                
-                    ParseSDDL.CheckSDDL(rec.Sddl, rec.DistinguishedName);
-                
-            }
-            File.WriteAllText(string.Format("{0}.htm", "Interesting"), AnsiConsole.ExportHtml());
-            AnsiConsole.Clear();
-        }
-        */
         static int Main(string [] args)
         {
             var app = new CommandApp<ProcessCommand>();
